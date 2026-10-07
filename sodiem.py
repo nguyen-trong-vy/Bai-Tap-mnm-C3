@@ -338,3 +338,27 @@ def manage_score(mssv, course):
             abort(404, description=f"Học phần {course_code} chưa có điểm để xoá.")
         del scores[course_code]
         return make_response("", 204)
+
+# --- Câu 9: Trang lỗi thống nhất ---
+@app.errorhandler(400)
+@app.errorhandler(404)
+@app.errorhandler(405)
+def handle_error(error):
+    status_code = error.code
+    titles = {
+        400: "Dữ liệu không hợp lệ",
+        404: "Không tìm thấy",
+        405: "Phương thức không được hỗ trợ",
+    }
+    title = titles.get(status_code, "Lỗi")
+    detail = getattr(error, "description", str(error))
+    
+    # Nếu route thuộc API
+    if request.path.startswith("/api/"):
+        return jsonify({"error": title, "detail": detail}), status_code
+        
+    # Nếu route thông thường trả về HTML
+    body = f"""<h1>{escape(title)} ({status_code})</h1>
+    <p>{escape(detail)}</p>
+    <p><a href="{url_for('index')}">Quay lại Trang chủ</a></p>"""
+    return layout(f"Lỗi {status_code}", body), status_code
