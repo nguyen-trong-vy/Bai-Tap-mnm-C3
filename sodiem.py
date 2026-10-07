@@ -1,6 +1,6 @@
 import io
 import csv
-from flask import Flask, url_for, request, redirect, abort, make_response
+from flask import Flask, url_for, request, redirect, abort, make_response, jsonify
 from markupsafe import escape
 
 app = Flask(__name__)
@@ -98,7 +98,6 @@ def layout(title: str, body: str) -> str:
 </body>
 </html>"""
 
-# --- Câu 1: Trang chủ ---
 @app.route("/")
 def index():
     total_students = len(STUDENTS)
@@ -113,19 +112,16 @@ def index():
     </p>"""
     return layout("Trang chủ", body)
 
-# --- Câu 2: Danh sách sinh viên ---
 @app.route("/students")
 def student_list():
     lop_filter = request.args.get("lop", "").strip()
     all_classes = sorted({info["lop"] for info in STUDENTS.values()})
     
-    # Thanh lọc
     filter_links = [f'<a href="{url_for("student_list")}">Tất cả</a>']
     for c in all_classes:
         filter_links.append(f'<a href="{url_for("student_list", lop=c)}">{escape(c)}</a>')
     filter_bar = '<div class="filter">Lọc theo lớp: ' + " | ".join(filter_links) + "</div>"
     
-    # Lọc danh sách
     filtered = []
     for mssv, info in STUDENTS.items():
         if not lop_filter or info["lop"].lower() == lop_filter.lower():
@@ -165,7 +161,6 @@ def student_list():
     </table>"""
     return layout("Danh sách sinh viên", filter_bar + table)
 
-# --- Câu 3: Chi tiết sinh viên ---
 @app.route("/students/<mssv>")
 def student_detail(mssv):
     summary = student_summary(mssv)
@@ -202,12 +197,10 @@ def student_detail(mssv):
     <p><small>Link rút gọn: <a href="{short_url}">{escape(short_url)}</a></small></p>"""
     return layout(f"Chi tiết - {summary['name']}", body)
 
-# --- Câu 4: Link rút gọn ---
 @app.route("/sv/<mssv>")
 def short_link(mssv):
     return redirect(url_for("student_detail", mssv=mssv), code=301)
 
-# --- Câu 5: Xuất CSV ---
 @app.route("/students/<mssv>/export")
 def export_csv(mssv):
     if mssv not in STUDENTS:
@@ -225,7 +218,6 @@ def export_csv(mssv):
     response.headers["Content-Disposition"] = f"attachment; filename=diem_{mssv}.csv"
     return response
 
-# --- Câu 6: Tìm kiếm an toàn ---
 @app.route("/search")
 def search():
     q = request.args.get("q", "")
@@ -260,7 +252,89 @@ def search():
     </div>"""
     return layout("Tìm kiếm", body)
 
-# Route tạm thời cho API ở Phần 1
+# --- Câu 7: API đọc dữ liệu ---
 @app.route("/api/students")
 def api_students():
-    return {}
+    lop_filter = request.args.get("lop")
+    min_avg_val = None
+    
+    # Phân biệt giữa không truyền min_avg và truyền giá trị sai kiểu
+    if "min_avg" in request.args:
+        try:
+            min_avg_val = float(request.args["min_avg"])
+        except ValueError:
+            abort(400, description="Tham số min_avg phải là một số thực hợp lệ.")
+            
+    results = []
+    for mssv, info in STUDENTS.items():
+        if lop_filter and info["lop"].lower() != lop_filter.strip().lower():
+            continue
+        summary = student_summary(mssv)
+        if min_avg_val is not None:
+            if summary["average"] is None or summary["average"] < min_avg_val:
+                continue
+        results.append(summary)
+        
+    return jsonify(results)
+
+@app.route("/api/students/<mssv>")
+def api_student_detail(mssv):
+    summary = student_summary(mssv)
+    if not summary:
+        abort(404, description=f"Không có sinh viên với MSSV = {mssv}.")
+    return jsonify(summary)
+
+# --- Câu 8: Quản lý điểm một học phần ---
+@app.route("/api/students/<mssv>/scores/<course>", methods=["GET", "PUT", "DELETE"])
+def manage_score(mssv, course):
+    if mssv not in STUDENTS:
+        abort(404, description=f"Không có sinh viên với MSSV = {mssv}.")
+        
+    course_code = course.strip().upper()
+    scores = STUDENTS[mssv]["scores"]
+    
+    if request.method == "GET":
+        if course_code not in scores:
+            abort(404, description=f"Học phần {course_code} chưa có điểm.")
+        return jsonify({
+            "mssv": mssv,
+            "course": course_code,
+            "score": scores[course_code]
+        })
+        
+    elif request.method == "PUT":
+        score_raw = request.args.get("score")
+        if score_raw is None:
+            abort(400, description="Thiếu tham số query score.")
+            
+        try:
+            score_val = float(score_raw)
+        except ValueError:
+            abort(400, description="Giá trị score phải là một số thực.")
+            
+        if score_val < 0.0 or score_val > 10.0:
+            abort(400, description="Điểm số phải nằm trong khoảng từ 0 đến 10.")
+            
+        is_new = course_code not in scores
+        scores[course_code] = score_val
+        new_avg = average(scores)
+        
+        data = {
+            "mssv": mssv,
+            "course": course_code,
+            "score": score_val,
+            "average": new_avg
+        }
+        
+        if is_new:
+            resp = make_response(jsonify(data), 201)
+            resp.headers["Location"] = url_for("manage_score", mssv=mssv, course=course_code)
+            return resp
+        else:
+            return jsonify(data), 200
+            
+    elif request.method == "DELETE":
+        if course_code not in scores:
+            abort(404, description=f"Học phần {course_code} chưa có điểm để xoá.")
+        del scores[course_code]
+        return make_response("", 204)
